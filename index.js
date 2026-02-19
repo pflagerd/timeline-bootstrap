@@ -2,6 +2,22 @@ const puppeteer = require('puppeteer');
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const chokidar = require('chokidar');
+
+// ── Paths to watch for live reload ──────────────────────────────────────────
+// Add or remove glob patterns here to control which files trigger a reload.
+const WATCH_PATHS = [
+    path.join(__dirname, 'index.html'),
+    path.join(__dirname, '**/*.css'),
+    path.join(__dirname, '**/*.js'),
+];
+
+// Files/directories that should never trigger a reload.
+const WATCH_IGNORED = [
+    path.join(__dirname, 'node_modules/**'),
+    path.join(__dirname, 'window-size.json'),
+    __filename,   // ignore index.js itself – restarting the process is out of scope here
+];
 
 const configPath = path.join(__dirname, 'window-size.json');
 
@@ -71,7 +87,40 @@ function loadWindowSize() {
 
     await page.goto('http://localhost:3000/index.html');
 
+    // ── Live-reload watcher ──────────────────────────────────────────────────
+    let reloadDebounce;
+
+    const watcher = chokidar.watch(WATCH_PATHS, {
+        ignored: WATCH_IGNORED,
+        persistent: true,
+        ignoreInitial: true,
+        awaitWriteFinish: {
+            stabilityThreshold: 150,  // ms quiet period before treating write as done
+            pollInterval: 50,
+        },
+    });
+
+    const reloadPage = (filePath) => {
+        clearTimeout(reloadDebounce);
+        reloadDebounce = setTimeout(async () => {
+            console.log(`[watch] Changed: ${path.relative(__dirname, filePath)} – reloading…`);
+            try {
+                await page.reload({ waitUntil: 'domcontentloaded' });
+            } catch (err) {
+                // Page may have closed already; ignore.
+            }
+        }, 100);
+    };
+
+    watcher
+        .on('change', reloadPage)
+        .on('add',    reloadPage)
+        .on('error',  (err) => console.error('[watch] Error:', err));
+
+    console.log('[watch] Watching for file changes…');
+
     browser.on('disconnected', () => {
+        watcher.close();
         server.close();
     });
 })();
